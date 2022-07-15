@@ -1,0 +1,19 @@
+// .vscode/tasks.json
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "nim: build current file (for debugging)",
+            "command": "nimble",
+            "args": [
+                "build",
+                "-g",
+                "--debugger:native",
+            ],
+            "options": {
+                "cwd": "${workspaceRoot}"
+            },
+            "type": "shell",
+        }
+    ]
+}

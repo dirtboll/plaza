@@ -1,0 +1,8 @@
+{
+    "nim.provider": "lsp",
+    "nim.project": ["src/plaza.nim"],
+    "nim.projectMapping":  {
+        "projectFile": "src/plaza.nim",
+        "fileRegex": ".*\\.nim"
+    }
+}
