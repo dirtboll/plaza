@@ -13,5 +13,5 @@ binDir        = "bin"
 
 requires "nim >= 1.6.6"
 requires "nimgl"
-requires "vmath"
+requires "glm"
 requires "polymorph"

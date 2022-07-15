@@ -3,8 +3,6 @@ import
         logging,
         sequtils,
         times,
-        strformat,
-        marshal,
         lists,
         tables,
         deques,
@@ -14,9 +12,13 @@ import
         opengl,
     ],
     polymorph,
-    vmath,
-
-    common/[settings, utils],
+    glm/[
+        vec,
+        mat,
+        quat,
+        mat_transform
+    ],
+    common/[settings],
     render/shader,
     "static"/objects
 
@@ -25,16 +27,16 @@ import
 registerComponents defaultComponentOptions:
     type
         Location = object
-            v: Vec3
-            old: Vec3
+            v: Vec3f
+            old: Vec3f
         Rotation = object
-            v: Quat
-            old: Quat
+            v: Quatf
+            old: Quatf
         Scale = object
-            v: Vec3
-            old: Vec3
+            v: Vec3f
+            old: Vec3f
         TransformMat = object
-            v: Mat4
+            v: Mat4f
             updated: bool
         Relationship = object
             parent: RelationshipInstance
@@ -54,18 +56,20 @@ makeSystem "resetTransMat", [Location, Rotation, Scale, TransformMat]:
         if item.location.v != item.location.old or
            item.rotation.v != item.rotation.old or
            item.scale.v != item.scale.old:
-            item.transformMat.v = mat4()
-
-            item.transformMat.v = item.transformMat.v * translate(item.location.v)
-            item.transformMat.v = item.transformMat.v * mat4(item.rotation.v)
-            item.transformMat.v = item.transformMat.v * scale(item.scale.v)
+            var m = mat4[float32]()
+            m = m.translate(item.location.v)
+            m = m * mat4(item.rotation.v)
+            m = m.scale(item.scale.v)
+            item.transformMat.v = m
 
             item.location.old = item.location.v
             item.rotation.old = item.rotation.v
             item.scale.old = item.scale.v
             item.transformMat.updated = true
+
         else:
             item.transformMat.updated = false
+
 defineSystem "updateSceneInheritance", [Relationship, TransformMat], defaultSysOpts:
     scenes = newSeq[EntityRef]()
 
@@ -92,18 +96,17 @@ makeSystemBody "updateSceneInheritance":
                 if not shouldUpdate:
                     continue
 
-                childItem.transformMat.v = itemTrans * childItem.transformMat.v
+                var m = itemTrans * childItem.transformMat.v
+                childItem.transformMat.v = m
                 childItem.transformMat.updated = true
                 q.addLast(childItem)
-
-
 defineGroup "updateTransGroup"
 
 makeSystem "render", [TransformMat, OpenGLModel]:
     all:
         # Upload model
-        var mat = flatten(item.transformMat.v)
-        glUniformMatrix4fv(item.openGLModel.modelLoc, 1, false, mat[0].addr)
+        var mat = item.transformMat.v
+        glUniformMatrix4fv(item.openGLModel.modelLoc, 1, false, mat.caddr)
 
         # Draw
         glBindVertexArray item.openGLModel.vao
@@ -117,18 +120,18 @@ commitGroup "renderGroup", "runRender"
 
 let
     rootSceneBp = cl(
-        Location(v: vec3(), old: vec3()),
-        Rotation(v: quat(), old: quat()),
-        Scale(v: vec3(1, 1, 1), old: vec3(1, 1, 1)),
-        TransformMat(v: mat4()),
+        Location(v: vec3(0f), old: vec3f(0f)),
+        Rotation(v: quatf(), old: quatf()),
+        Scale(v: vec3(1f), old: vec3(1f)),
+        TransformMat(v: mat4[float32]()),
         Relationship(children: newSeq[RelationshipInstance]()),
         RootScene()
     )
     renderEntityBp = cl(
-        Location(v: vec3(), old: vec3()),
-        Rotation(v: quat(), old: quat()),
-        Scale(v: vec3(1, 1, 1), old: vec3(1, 1, 1)),
-        TransformMat(v: mat4()),
+        Location(v: vec3(0f), old: vec3f(0f)),
+        Rotation(v: quatf(), old: quatf()),
+        Scale(v: vec3(1f), old: vec3(1f)),
+        TransformMat(v: mat4[float32]()),
         Relationship(children: newSeq[RelationshipInstance]()),
         OpenGLModel()
     )
@@ -221,8 +224,7 @@ proc main() =
 
     glGenBuffers 1, vbo.addr
     glBindBuffer GL_ARRAY_BUFFER, vbo
-    glBufferData GL_ARRAY_BUFFER, cint(cfloat.sizeof * combined.len), combined[
-            0].addr, GL_STATIC_DRAW
+    glBufferData GL_ARRAY_BUFFER, cint(cfloat.sizeof * combined.len), combined[0].addr, GL_STATIC_DRAW
 
     glEnableVertexAttribArray 0
     glVertexAttribPointer 0, 3, EGL_FLOAT, false, 0, cast[pointer](vertI)
@@ -236,12 +238,12 @@ proc main() =
 
 
     # Uniforms
-    var modelMat = flatten(mat4())
-    var viewMat = flatten(lookAt(vec3(0, 0, -10), vec3(0, 0, 0), vec3(0, 1, 0)))
-    var projectionMat = flatten(perspective(60.0, 800/600, 0.01, 100000))
-    var lightPosVec = flatten(vec3(10.0, 10, 10))
-    var viewPosVec = flatten(vec3(0.0, 0, -5))
-    var lightColorVec = flatten(vec3(1.0, 1, 1))
+    var modelMat = mat4[float32]()
+    var viewMat = lookAtRH(vec3f(0, 0, -10), vec3f(0, 0, 0), vec3f(0, 1, 0))
+    var projectionMat = perspectiveRH(60f, 800/600, 0.01, 100000)
+    var lightPosVec = vec3f(10, 10, 10)
+    var viewPosVec = vec3f(0, 0, -5)
+    var lightColorVec = vec3f(1, 1, 1)
 
     var modelLoc = glGetUniformLocation(defaultShader.program, "uModel")
     var viewLoc = glGetUniformLocation(defaultShader.program, "uView")
@@ -250,12 +252,12 @@ proc main() =
     var viewPosLoc = glGetUniformLocation(defaultShader.program, "uViewPos")
     var lightColorPos = glGetUniformLocation(defaultShader.program, "uLightColor")
 
-    glUniformMatrix4fv(modelLoc, 1, false, modelMat[0].addr)
-    glUniformMatrix4fv(viewLoc, 1, false, viewMat[0].addr)
-    glUniformMatrix4fv(projectionLoc, 1, false, projectionMat[0].addr)
-    glUniform3fv(lightPosLoc, 1, lightPosVec[0].addr)
-    glUniform3fv(viewPosLoc, 1, viewPosVec[0].addr)
-    glUniform3fv(lightColorPos, 1, lightColorVec[0].addr)
+    glUniformMatrix4fv(modelLoc, 1, false, modelMat.caddr)
+    glUniformMatrix4fv(viewLoc, 1, false, viewMat.caddr)
+    glUniformMatrix4fv(projectionLoc, 1, false, projectionMat.caddr)
+    glUniform3fv(lightPosLoc, 1, lightPosVec.caddr)
+    glUniform3fv(viewPosLoc, 1, viewPosVec.caddr)
+    glUniform3fv(lightColorPos, 1, lightColorVec.caddr)
 
 
 
@@ -270,8 +272,10 @@ proc main() =
         sceneLoc = rootScene.fetch Location
         be1Rot = boxEntity1.fetch Rotation
         be2Loc = boxEntity2.fetch Location
-        
 
+        sceneMat = rootScene.fetch TransformMat
+        be1Mat = boxEntity1.fetch TransformMat
+        be2Mat = boxEntity2.fetch TransformMat
 
     rootScene.addChild(boxEntity1)
     boxEntity1.addChild(boxEntity2)
@@ -292,7 +296,6 @@ proc main() =
 
     # Tick
     var t = 0.0
-    var up = vec3(0, 1, 0)
 
     var prevTime = 0.0
     var currTime = 0.0
@@ -309,9 +312,8 @@ proc main() =
         defaultShader.use()
 
         t += delta * 0.1
-        echo t
-        var r = t*(math.PI/180)
-        be1Rot.v = quat(mat4(be1Rot.v) * rotateY(r.float32))
+        var r = t*(PI/180)
+        be1Rot.v = be1Rot.v.rotate(r, vec3(0f, 1, 0))
 
         runUpdateTrans()
         runRender()
