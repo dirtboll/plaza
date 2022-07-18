@@ -1,2 +1,3 @@
 bin/
 nimbledeps/
+src/ecs_code_log.nim
