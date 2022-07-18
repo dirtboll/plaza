@@ -6,6 +6,7 @@ import
         lists,
         tables,
         deques,
+        math
     ],
     nimgl/[
         glfw,
@@ -24,88 +25,97 @@ import
 
 # ============= ECS =============
 
+type TransMatState = enum
+    NOT_UPDATED, UPDATED
+
 registerComponents defaultComponentOptions:
     type
-        Location = object
-            v: Vec3f
-            old: Vec3f
-        Rotation = object
-            v: Quatf
-            old: Quatf
-        Scale = object
-            v: Vec3f
-            old: Vec3f
-        TransformMat = object
+        Transform = object
+            loc: Vec3f
+            oldLoc: Vec3f
+            rot: Quatf
+            oldRot: Quatf
+            sca: Vec3f
+            oldSca: Vec3f
+        TransformState = object
+            v: TransMatState
+        LocalTransformMatrix = object
             v: Mat4f
-            updated: bool
+        GlobalTransformMatrix = object
+            v: Mat4f
         Relationship = object
             parent: RelationshipInstance
             children: seq[RelationshipInstance]
             childIndex: int
-
             entity: EntityRef
-        RootScene = object
         OpenGLModel = object
             vao: uint32
             vbo: uint32
             vertLen: int32
             modelLoc: GLint
 
-makeSystem "resetTransMat", [Location, Rotation, Scale, TransformMat]:
+makeSystem "updateTrans", [Transform, TransformState, LocalTransformMatrix]:
     all:
-        if item.location.v != item.location.old or
-           item.rotation.v != item.rotation.old or
-           item.scale.v != item.scale.old:
-            var m = mat4[float32]()
-            m = m.translate(item.location.v)
-            m = m * mat4(item.rotation.v)
-            m = m.scale(item.scale.v)
-            item.transformMat.v = m
+        if item.transform.loc != item.transform.oldLoc or
+           item.transform.rot != item.transform.oldRot or
+           item.transform.sca != item.transform.oldSca:
+            var m = mat4f()
+                .translate(item.transform.loc)
+                .`*`(mat4(item.transform.rot))
+                .scale(item.transform.sca)
+            item.localTransformMatrix.v = m
 
-            item.location.old = item.location.v
-            item.rotation.old = item.rotation.v
-            item.scale.old = item.scale.v
-            item.transformMat.updated = true
-
+            item.transform.oldLoc = item.transform.loc
+            item.transform.oldRot = item.transform.rot
+            item.transform.oldSca = item.transform.sca
+            item.transformState.v = TransMatState.UPDATED
         else:
-            item.transformMat.updated = false
+            item.transformState.v = TransMatState.NOT_UPDATED
 
-defineSystem "updateSceneInheritance", [Relationship, TransformMat], defaultSysOpts:
+defineSystem "updateInheritance", [Relationship, TransformState,
+        LocalTransformMatrix, GlobalTransformMatrix], defaultSysOpts:
     scenes = newSeq[EntityRef]()
 
-makeSystemBody "updateSceneInheritance":
-    var q = initDeque[SysItemUpdateSceneInheritance]()
+makeSystemBody "updateInheritance":
+    var q = initDeque[SysItemUpdateInheritance]()
 
     for scene in sys.scenes:
-        if unlikely(not sys.contains scene):
-            continue
-
         var sceneItem = sys.groups[sys.index[scene.entityId]]
         q.addLast(sceneItem)
 
         while q.len > 0:
+            if unlikely(not sys.contains scene):
+                continue
+
             var parentItem = q.popFirst()
-            var itemTrans = parentItem.transformMat.v
+            var parentTrans = parentItem.globalTransformMatrix.v
+            var parentTransState = parentItem.transformState.v
 
             for child in parentItem.relationship.children:
                 if unlikely(not sys.contains(child.entity)):
                     continue
-                var 
-                    childItem = sys.groups[sys.index[child.entity.entityId]]
-                    shouldUpdate = parentItem.transformMat.updated or childItem.transformMat.updated
-                if not shouldUpdate:
+
+                var childItem = sys.groups[sys.index[child.entity.entityId]]
+                if childItem.transformState.v != TransMatState.UPDATED and
+                   parentTransState != TransMatState.UPDATED:
                     continue
 
-                var m = itemTrans * childItem.transformMat.v
-                childItem.transformMat.v = m
-                childItem.transformMat.updated = true
+                var m = parentTrans * childItem.localTransformMatrix.v
+                childItem.globalTransformMatrix.v = m
+                childItem.transformState.v = TransMatState.UPDATED
                 q.addLast(childItem)
+
+                # if child.entity.entityId.int == 3:
+                #     echo "========================="
+                #     echo "Child mat: \n" & $childItem.globalTransformMatrix.v
+                #     echo "Parent mat: \n" & $parentTrans
+                #     echo "Mult: \n" & $(parentTrans * childItem.globalTransformMatrix.v)
 defineGroup "updateTransGroup"
 
-makeSystem "render", [TransformMat, OpenGLModel]:
+makeSystem "render", [GlobalTransformMatrix, OpenGLModel]:
     all:
         # Upload model
-        var mat = item.transformMat.v
+        var mat = item.globalTransformMatrix.v
         glUniformMatrix4fv(item.openGLModel.modelLoc, 1, false, mat.caddr)
 
         # Draw
@@ -120,18 +130,17 @@ commitGroup "renderGroup", "runRender"
 
 let
     rootSceneBp = cl(
-        Location(v: vec3(0f), old: vec3f(0f)),
-        Rotation(v: quatf(), old: quatf()),
-        Scale(v: vec3(1f), old: vec3(1f)),
-        TransformMat(v: mat4[float32]()),
+        Transform(loc: vec3f(0), rot: quatf(), sca: vec3f(1)),
+        TransformState(),
+        LocalTransformMatrix(v: mat4f()),
+        GlobalTransformMatrix(v: mat4f()),
         Relationship(children: newSeq[RelationshipInstance]()),
-        RootScene()
     )
     renderEntityBp = cl(
-        Location(v: vec3(0f), old: vec3f(0f)),
-        Rotation(v: quatf(), old: quatf()),
-        Scale(v: vec3(1f), old: vec3(1f)),
-        TransformMat(v: mat4[float32]()),
+        Transform(loc: vec3f(0), rot: quatf(), sca: vec3f(1)),
+        TransformState(),
+        LocalTransformMatrix(v: mat4f()),
+        GlobalTransformMatrix(v: mat4f()),
         Relationship(children: newSeq[RelationshipInstance]()),
         OpenGLModel()
     )
@@ -224,7 +233,8 @@ proc main() =
 
     glGenBuffers 1, vbo.addr
     glBindBuffer GL_ARRAY_BUFFER, vbo
-    glBufferData GL_ARRAY_BUFFER, cint(cfloat.sizeof * combined.len), combined[0].addr, GL_STATIC_DRAW
+    glBufferData GL_ARRAY_BUFFER, cint(cfloat.sizeof * combined.len), combined[
+            0].addr, GL_STATIC_DRAW
 
     glEnableVertexAttribArray 0
     glVertexAttribPointer 0, 3, EGL_FLOAT, false, 0, cast[pointer](vertI)
@@ -238,9 +248,9 @@ proc main() =
 
 
     # Uniforms
-    var modelMat = mat4[float32]()
+    var modelMat = mat4f()
     var viewMat = lookAtRH(vec3f(0, 0, -10), vec3f(0, 0, 0), vec3f(0, 1, 0))
-    var projectionMat = perspectiveRH(60f, 800/600, 0.01, 100000)
+    var projectionMat = perspective(60f.degToRad, 800/600, 0.01, 100000)
     var lightPosVec = vec3f(10, 10, 10)
     var viewPosVec = vec3f(0, 0, -5)
     var lightColorVec = vec3f(1, 1, 1)
@@ -252,7 +262,7 @@ proc main() =
     var viewPosLoc = glGetUniformLocation(defaultShader.program, "uViewPos")
     var lightColorPos = glGetUniformLocation(defaultShader.program, "uLightColor")
 
-    glUniformMatrix4fv(modelLoc, 1, false, modelMat.caddr)
+    # glUniformMatrix4fv(modelLoc, 1, false, modelMat.caddr)
     glUniformMatrix4fv(viewLoc, 1, false, viewMat.caddr)
     glUniformMatrix4fv(projectionLoc, 1, false, projectionMat.caddr)
     glUniform3fv(lightPosLoc, 1, lightPosVec.caddr)
@@ -265,37 +275,35 @@ proc main() =
 
     var
         rootScene = createModelScene()
-        boxEntity1 = createModelEntity()
-        boxEntity2 = createModelEntity()
-        glModel1 = boxEntity1.fetch OpenGLModel
-        glModel2 = boxEntity2.fetch OpenGLModel
-        sceneLoc = rootScene.fetch Location
-        be1Rot = boxEntity1.fetch Rotation
-        be2Loc = boxEntity2.fetch Location
+        box1 = createModelEntity()
+        box2 = createModelEntity()
+        box1GlModel = box1.fetch OpenGLModel
+        box2GlModel = box2.fetch OpenGLModel
+        sceneTrans = rootScene.fetch Transform
+        box1Trans = box1.fetch Transform
+        box2Trans = box2.fetch Transform
 
-        sceneMat = rootScene.fetch TransformMat
-        be1Mat = boxEntity1.fetch TransformMat
-        be2Mat = boxEntity2.fetch TransformMat
+        sceneMat = rootScene.fetch GlobalTransformMatrix
+        box1Mat = box1.fetch GlobalTransformMatrix
+        box2Mat = box2.fetch GlobalTransformMatrix
 
-    rootScene.addChild(boxEntity1)
-    boxEntity1.addChild(boxEntity2)
-    sysUpdateSceneInheritance.scenes.add(rootScene)
+    rootScene.addChild(box1)
+    box1.addChild(box2)
+    sysUpdateInheritance.scenes.add(rootScene)
 
-    glModel1.vao = vao
-    glModel1.vbo = vbo
-    glModel1.vertLen = CUBE_VERT.len
-    glModel1.modelLoc = modelLoc
+    box1GlModel.vao = vao
+    box1GlModel.vbo = vbo
+    box1GlModel.vertLen = CUBE_VERT.len
+    box1GlModel.modelLoc = modelLoc
 
-    glModel2.vao = vao
-    glModel2.vbo = vbo
-    glModel2.vertLen = CUBE_VERT.len
-    glModel2.modelLoc = modelLoc
+    box2GlModel.vao = vao
+    box2GlModel.vbo = vbo
+    box2GlModel.vertLen = CUBE_VERT.len
+    box2GlModel.modelLoc = modelLoc
 
-    sceneLoc.v.x += 3
-    be2Loc.v.x -= 3
+    sceneTrans.loc.x += 3
+    box2Trans.loc.x -= 3
 
-    # Tick
-    var t = 0.0
 
     var prevTime = 0.0
     var currTime = 0.0
@@ -311,12 +319,11 @@ proc main() =
 
         defaultShader.use()
 
-        t += delta * 0.1
-        var r = t*(PI/180)
-        be1Rot.v = be1Rot.v.rotate(r, vec3(0f, 1, 0))
+        box1Trans.rot = box1Trans.rot.rotate(delta, vec3f(0, 1, 0))
 
-        runUpdateTrans()
-        runRender()
+        doUpdateTrans()
+        doUpdateInheritance()
+        doRender()
 
         window.swapBuffers()
     deinitWindow()
